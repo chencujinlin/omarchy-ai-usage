@@ -1,0 +1,5 @@
+{
+  "piSessionDirs": ["~/.pi/agent/sessions", "~/.omp/agent/sessions"],
+  "opencodeDataDir": "~/.local/share/opencode",
+  "deepseekHarnessSessionDirs": ["~/.dsh/sessions"]
+}

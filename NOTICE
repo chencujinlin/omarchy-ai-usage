@@ -1,0 +1,14 @@
+Omarchy AI Usage
+
+The QML panel and the original agent assets derive from Omarchy 4.0.5:
+https://github.com/omacom/omarchy/tree/master/shell/plugins/agents
+Copyright (c) David Heinemeier Hansson. Licensed under the MIT License.
+The original license is preserved in LICENSE and plugin/LICENSE.
+
+Local format references used for the independently implemented Python adapters:
+- Tokei: https://github.com/cclank/tokei
+  Reference commit: 6116c6bdd747293cc856b665160a2d507ef9fdb3
+- DeepSeek Harness session, LLM, and JSONL persistence definitions:
+  https://github.com/deepseek-ai/deepseek-harness
+
+The new adapters and local panel changes are distributed under the MIT License.

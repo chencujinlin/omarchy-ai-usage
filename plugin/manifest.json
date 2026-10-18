@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "id": "chencu.agents",
+  "name": "AI 用量",
+  "version": "1.1.0",
+  "author": "Omarchy; local extensions by chencu",
+  "license": "MIT",
+  "description": "Claude、Codex、Fireworks 账号额度，以及 Pi、OpenCode、DeepSeek Harness 的本地用量。",
+  "kinds": [
+    "bar-widget"
+  ],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "AI 用量",
+    "description": "Claude、Codex、Fireworks 账号额度，以及 Pi、OpenCode、DeepSeek Harness 的本地用量。",
+    "category": "AI",
+    "aliases": [
+      "agents",
+      "model-usage"
+    ],
+    "allowMultiple": false,
+    "defaults": {
+      "providers": {
+        "claude": {
+          "enabled": true
+        },
+        "codex": {
+          "enabled": true
+        },
+        "fireworks": {
+          "enabled": true
+        },
+        "pi": {
+          "enabled": true
+        },
+        "opencode": {
+          "enabled": true
+        },
+        "deepseek-harness": {
+          "enabled": true
+        }
+      },
+      "refreshIntervalSec": 300,
+      "syncMode": "Off",
+      "syncDir": "",
+      "syncFileName": "",
+      "syncDeviceId": ""
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "刷新间隔（秒）",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 300
+      },
+      {
+        "key": "syncMode",
+        "type": "enum",
+        "label": "Synced aggregation",
+        "options": [
+          "Off",
+          "On"
+        ],
+        "defaultValue": "Off",
+        "description": "When On, write this machine's local usage snapshot and merge snapshots from other machines."
+      },
+      {
+        "key": "syncDir",
+        "type": "path",
+        "label": "Sync folder",
+        "defaultValue": "",
+        "description": "A folder synced by Syncthing, Dropbox, rsync, etc."
+      },
+      {
+        "key": "syncFileName",
+        "type": "string",
+        "label": "Snapshot file name",
+        "defaultValue": "",
+        "description": "Optional. Defaults to <hostname>.json. Use a different file name on each machine, such as laptop.json or desktop.json."
+      },
+      {
+        "key": "syncDeviceId",
+        "type": "string",
+        "label": "Device id",
+        "defaultValue": "",
+        "description": "Optional stable device name used inside synced aggregate snapshots."
+      }
+    ]
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.agents"
+  }
+}
