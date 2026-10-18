@@ -254,6 +254,7 @@ Item {
       accountingScope: String(record.accountingScope || "account"),
       // Costs are local log entries, never merged into synced token totals.
       recordedCost: record.recordedCost || null,
+      performance: record.performance || null,
 
       // Rate limits and balances stay per-account and are never merged
       // across devices.

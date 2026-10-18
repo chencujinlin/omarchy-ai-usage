@@ -48,7 +48,9 @@ def main():
         if stage.exists():
             shutil.rmtree(stage)
     subprocess.run(["python3", str(target / "collectors/update.py"), "--local-only", "--force"], check=True)
-    subprocess.run(["omarchy-shell", "shell", "rescanPlugins"], check=True)
+    # Atomic replacement keeps the plugin complete, but Quickshell can retain
+    # compiled QML for the same URL. Restart the shell to load the new code.
+    subprocess.run(["omarchy", "restart", "shell"], check=True)
     print("Installed " + str(target))
     print("Backup: " + str(backup))
 

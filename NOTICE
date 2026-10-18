@@ -12,3 +12,8 @@ Local format references used for the independently implemented Python adapters:
   https://github.com/deepseek-ai/deepseek-harness
 
 The new adapters and local panel changes are distributed under the MIT License.
+
+The DeepSeek Harness tool icons are unmodified official Web UI favicons:
+https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/web/public/favicon.svg
+https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/web/public/favicon-dark.svg
+Copyright (c) 2026 DeepSeek. The license is preserved in plugin/assets/DEEPSEEK-LICENSE.

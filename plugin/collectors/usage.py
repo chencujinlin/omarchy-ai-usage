@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import statistics
 import subprocess
 from datetime import datetime, timedelta, timezone
 
@@ -24,7 +25,7 @@ except ImportError:
     zstd = None
 DECOMPRESSION_ERRORS = (zstd.ZstdError,) if zstd else ()
 
-PARSER_VERSION = 1
+PARSER_VERSION = 2
 NAMES = {"pi": "Pi", "opencode": "OpenCode", "deepseek-harness": "DeepSeek Harness"}
 
 
@@ -74,6 +75,53 @@ def event(key, session, when, model, inputs, outputs, read=0, write=0, reasoning
             "cacheReadInputTokens": buckets[2], "cacheCreationInputTokens": buckets[3],
             "reasoningTokens": min(count(reasoning), buckets[1]),
             "cost": number(cost) if cost is not None else None}
+
+
+def nonnegative(value):
+    try:
+        result = float(value)
+        return result if math.isfinite(result) and result >= 0 else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def timing_sample(outputs, elapsed=None, generation=None, ttft=None, approximate=False):
+    elapsed, generation, ttft = map(nonnegative, (elapsed, generation, ttft))
+    if elapsed is not None and elapsed <= 0:
+        elapsed = None
+    if generation is not None and generation <= 0:
+        generation = None
+    if elapsed is not None and ttft is not None and ttft > elapsed:
+        ttft, generation = None, None
+    if elapsed is None and generation is None and ttft is None:
+        return None
+    return {"outputTokens": count(outputs), "elapsedSeconds": elapsed,
+            "generationSeconds": generation, "ttftSeconds": ttft,
+            "ttftApproximate": approximate}
+
+
+def clock_sample(outputs, start, first_token, end, approximate=False):
+    start, first_token, end = map(timestamp, (start, first_token, end))
+    if end is None or (start is not None and end <= start):
+        return None
+    if first_token is not None and (first_token > end or (start is not None and first_token < start)):
+        first_token = None
+    return timing_sample(outputs,
+                         end - start if start is not None else None,
+                         end - first_token if first_token is not None else None,
+                         first_token - start if first_token is not None and start is not None else None,
+                         approximate)
+
+
+def pi_timing(row, msg, outputs):
+    duration, ttft = nonnegative(msg.get("duration")), nonnegative(msg.get("ttft"))
+    if duration is not None:
+        elapsed = duration / 1000
+    else:
+        start, end = timestamp(msg.get("timestamp")), timestamp(row.get("timestamp"))
+        elapsed = end - start if start is not None and end is not None else None
+    ttft = ttft / 1000 if ttft is not None else None
+    return timing_sample(outputs, elapsed, elapsed - ttft if elapsed is not None and ttft is not None else None, ttft)
 
 
 def json_lines(path):
@@ -126,10 +174,14 @@ def parse_pi(path):
         amount = cost.get("total")
         if amount is None and cost:
             amount = sum(number(cost.get(k)) for k in ("input", "output", "cacheRead", "cacheWrite"))
-        records.append(event("pi:" + str(row.get("id") or f"{session}:{index}"), session,
-                             row.get("timestamp") or msg.get("timestamp"),
-                             identity(msg.get("provider"), msg.get("model"), msg.get("responseModel")),
-                             inputs, outputs, read, write, reasoning, amount))
+        record = event("pi:" + str(row.get("id") or f"{session}:{index}"), session,
+                       row.get("timestamp") or msg.get("timestamp"),
+                       identity(msg.get("provider"), msg.get("model"), msg.get("responseModel")),
+                       inputs, outputs, read, write, reasoning, amount)
+        if record:
+            sample = pi_timing(row, msg, outputs)
+            record["timings"] = [sample] if sample else []
+            records.append(record)
     return [row for row in records if row]
 
 
@@ -172,9 +224,48 @@ def parse_opencode_db(path):
                     seen.add(mid)
                 row = opencode_event(msg, mid, sid, created)
                 if row:
+                    ended = obj(msg.get("time")).get("completed")
+                    sample = clock_sample(row["outputTokens"], obj(msg.get("time")).get("created") or created, None, ended)
+                    row["timings"] = [sample] if sample else []
                     records.append(row)
+        attach_opencode_timings(conn, tables, records)
         conn.rollback()
     return records
+
+
+def attach_opencode_timings(conn, tables, records):
+    if "part" not in tables:
+        return
+    by_id = {row["key"].removeprefix("opencode:"): row for row in records}
+    states, samples = {}, {}
+    query = """SELECT message_id, time_created,
+        CASE WHEN json_valid(data) THEN json_extract(data,'$.type') END,
+        CASE WHEN json_valid(data) THEN json_extract(data,'$.time.start') END,
+        CASE WHEN json_valid(data) THEN json_extract(data,'$.tokens.output') END,
+        CASE WHEN json_valid(data) THEN json_extract(data,'$.tokens.reasoning') END
+        FROM part ORDER BY message_id,time_created,id"""
+    for mid, written, kind, started, outputs, reasoning in conn.execute(query):
+        if mid not in by_id:
+            continue
+        state = states.setdefault(mid, {"start": by_id[mid]["time"], "first": None})
+        if kind == "step-start":
+            state["first"] = None
+        elif kind in ("reasoning", "text") and started is not None:
+            moment = timestamp(started)
+            if moment is not None:
+                state["first"] = moment if state["first"] is None else min(moment, state["first"])
+        elif kind == "step-finish":
+            # OpenCode records block-start, not the first nonempty delta.
+            # This is an approximation; step-start itself arrives *after*
+            # the request begins. Do not use it to erase the actual wait.
+            sample = clock_sample(count(outputs) + count(reasoning), state["start"], state["first"], written, approximate=True)
+            if sample:
+                samples.setdefault(mid, []).append(sample)
+            # Subsequent steps may contain intervening tools. Without their
+            # next request-start timestamp, only generation speed is known.
+            state.update(start=None, first=None)
+    for mid, values in samples.items():
+        by_id[mid]["timings"] = values
 
 
 def parse_opencode_json(path):
@@ -183,6 +274,9 @@ def parse_opencode_json(path):
     except ValueError:
         return []
     row = opencode_event(msg, path.stem, path.parent.name, None)
+    if row:
+        sample = clock_sample(row["outputTokens"], obj(msg.get("time")).get("created"), None, obj(msg.get("time")).get("completed"))
+        row["timings"] = [sample] if sample else []
     return [row] if row else []
 
 
@@ -196,10 +290,43 @@ def dsh_usage(usage, row, session, model, key):
                  usage.get("reasoningTokens"))
 
 
+def stream_bounds(stream):
+    """Find the first nonempty generated delta, not merely a block-start marker."""
+    first_token, finish, last = None, None, None
+    for entry in stream if isinstance(stream, list) else []:
+        entry = obj(entry)
+        if entry.get("type") in ("text-chunks", "reasoning-chunks", "tool-call-chunks"):
+            moment = timestamp(entry.get("time0"))
+            members = entry.get("args" if entry.get("type") == "tool-call-chunks" else "texts")
+            gaps = entry.get("dt")
+            if moment is None or not isinstance(members, list) or not isinstance(gaps, list):
+                continue
+            for index, text in enumerate(members):
+                if index:
+                    gap = nonnegative(gaps[index - 1]) if index - 1 < len(gaps) else None
+                    if gap is None:
+                        break
+                    moment += gap / 1000
+                last = max(last or moment, moment)
+                if isinstance(text, str) and text:
+                    first_token = min(first_token or moment, moment)
+        else:
+            moment = timestamp(entry.get("time"))
+            chunk = obj(entry.get("chunk")) or entry
+            if moment is None:
+                continue
+            last = max(last or moment, moment)
+            if chunk.get("type") == "finish":
+                finish = moment
+            if chunk.get("type") in ("text-delta", "reasoning-delta", "tool-call-delta") and (chunk.get("text") or chunk.get("argumentsDelta")):
+                first_token = min(first_token or moment, moment)
+    return first_token, finish or (last if first_token is not None else None)
+
+
 def parse_dsh(path):
     session = str(path.parent.resolve())
     model, provider, candidates, attempts = "unknown", "", {}, []
-    seed_length = 0
+    seed_length, clocks = 0, {}
     for index, row in enumerate(json_lines(path)):
         kind, data = row.get("type"), obj(row.get("data"))
         if kind == "session":
@@ -210,6 +337,7 @@ def parse_dsh(path):
             # The last tagged boundary owns this fork's inherited prefix.
             candidates.clear()
             attempts.clear()
+            clocks.clear()
             continue
         inherited = count(row.get("seq", index - 1)) < seed_length
         if kind == "request/header":
@@ -220,8 +348,15 @@ def parse_dsh(path):
             continue
         turn, step = data.get("turn"), data.get("step")
         key = f"dsh:{session}:{turn}:{step}"
+        clock = clocks.setdefault(key, {"start": None, "first": None, "end": None})
+        if kind in ("step/start", "request/context", "llm/retry-started"):
+            clock.update(start=timestamp(row.get("time")), first=None, end=None)
         if kind == "assistant/chunk":
             chunk = obj(data.get("chunk"))
+            if chunk.get("type") in ("text-delta", "reasoning-delta", "tool-call-delta") and (chunk.get("text") or chunk.get("argumentsDelta")):
+                clock["first"] = clock["first"] or timestamp(row.get("time"))
+            if chunk.get("type") == "finish":
+                clock["end"] = timestamp(row.get("time"))
             if chunk.get("type") == "usage" and turn is not None and step is not None:
                 record = dsh_usage(chunk.get("usage"), row, session, identity(provider, model), key)
                 if record and candidates.get(key, (0, None))[0] < 2:
@@ -244,10 +379,19 @@ def parse_dsh(path):
                 key += ":attempt:" + str(row.get("seq", index))
             record = dsh_usage(usage, row, session, name, key)
             if record:
+                first_token, ended = stream_bounds(data.get("stream"))
+                sample = clock_sample(record["outputTokens"], clock["start"], first_token or clock["first"], ended or clock["end"] or row.get("time"))
+                record["timings"] = [sample] if sample else []
                 if kind == "assistant/attempt":
                     attempts.append(record)
+                    clock.update(start=None, first=None, end=None)
                 else:
                     candidates[key] = (2, record)
+    for key, (priority, record) in candidates.items():
+        if priority == 1:
+            clock = clocks[key]
+            sample = clock_sample(record["outputTokens"], clock["start"], clock["first"], clock["end"] or record["time"])
+            record["timings"] = [sample] if sample else []
     return [r for _, r in candidates.values()] + attempts
 
 
@@ -320,12 +464,49 @@ def scan(agent, settings, cache, force=False):
     return aggregate(agent, rows, errors)
 
 
+def performance(records):
+    delays, latencies, generation_tokens, generation_seconds = [], [], 0, 0
+    elapsed_tokens, elapsed_seconds, generation_samples, elapsed_samples, approximate = 0, 0, 0, 0, 0
+    inputs, cache_reads = 0, 0
+    for row in records:
+        inputs += row["inputTokens"] + row["cacheReadInputTokens"] + row["cacheCreationInputTokens"]
+        cache_reads += row["cacheReadInputTokens"]
+        for sample in row.get("timings", []):
+            ttft = nonnegative(sample.get("ttftSeconds"))
+            duration = nonnegative(sample.get("elapsedSeconds"))
+            generation = nonnegative(sample.get("generationSeconds"))
+            outputs = count(sample.get("outputTokens"))
+            if ttft is not None:
+                delays.append(ttft)
+                approximate += bool(sample.get("ttftApproximate"))
+            if duration is not None and duration > 0:
+                latencies.append(duration)
+                if outputs:
+                    elapsed_tokens += outputs
+                    elapsed_seconds += duration
+                    elapsed_samples += 1
+            if generation is not None and generation > 0 and outputs:
+                generation_tokens += outputs
+                generation_seconds += generation
+                generation_samples += 1
+    return {"calls": len(records), "ttftSamples": len(delays), "ttftApproximateSamples": approximate,
+            "averageTtftSeconds": statistics.mean(delays) if delays else None,
+            "medianTtftSeconds": statistics.median(delays) if delays else None,
+            "latencySamples": len(latencies), "averageLatencySeconds": statistics.mean(latencies) if latencies else None,
+            "generationSamples": generation_samples,
+            "tokensPerSecond": generation_tokens / generation_seconds if generation_seconds else None,
+            "endToEndSamples": elapsed_samples,
+            "endToEndTokensPerSecond": elapsed_tokens / elapsed_seconds if elapsed_seconds else None,
+            "cacheHitRate": cache_reads / inputs if inputs else None}
+
+
 def aggregate(agent, records, errors=(), now=None):
     now = now or datetime.now().astimezone()
     today = now.date().isoformat()
     recent = {(now.date() - timedelta(days=i)).isoformat(): {"messageCount": 0, "promptCount": 0, "sessions": set()} for i in range(6, -1, -1)}
     sessions, active, today_sessions, models, today_models = set(), set(), set(), {}, {}
     today_calls, today_total, cost, today_cost, known_costs = 0, 0, 0.0, 0.0, 0
+    today_records = []
     fields = ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens", "reasoningTokens")
     for row in records:
         day = datetime.fromtimestamp(row["time"]).astimezone().date().isoformat()
@@ -343,6 +524,7 @@ def aggregate(agent, records, errors=(), now=None):
             recent[day]["promptCount"] += 1
             recent[day]["sessions"].add(row["session"])
         if day == today:
+            today_records.append(row)
             today_calls += 1
             today_total += total
             today_sessions.add(row["session"])
@@ -358,5 +540,6 @@ def aggregate(agent, records, errors=(), now=None):
             "todayTokensByModel": today_models, "recentDays": days,
             "totalPrompts": len(records), "totalSessions": len(sessions), "activeDays": len(active),
             "activeDates": sorted(active), "modelUsage": models,
+            "performance": {"today": performance(today_records), "allTime": performance(records)},
             "recordedCost": {"currency": "USD", "total": round(cost, 8), "today": round(today_cost, 8),
                              "knownCalls": known_costs, "totalCalls": len(records)} if known_costs else None}

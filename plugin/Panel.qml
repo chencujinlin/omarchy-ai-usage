@@ -42,6 +42,9 @@ Panel {
   readonly property var headline: bindingWindow(provider)
   readonly property var balance: provider ? (provider.balance || null) : null
   readonly property var recordedCost: provider ? (provider.recordedCost || null) : null
+  readonly property bool performanceIsToday: !!provider && !!provider.performance && provider.performance.today.calls > 0
+  readonly property var performance: provider && provider.performance
+    ? (performanceIsToday ? provider.performance.today : provider.performance.allTime) : null
   // A prepaid account runs low the way a subscription window fills up: the
   // last 10% of the funded credits lights the same alarm.
   readonly property bool balanceAlarming: !!balance && balance.funded > 0
@@ -169,6 +172,38 @@ Panel {
     var amount = Number(value)
     if (!isFinite(amount)) amount = 0
     return currencyPrefix(currency) + amount.toFixed(2)
+  }
+
+  function metricNumber(value, suffix, decimals) {
+    if (value === null || value === undefined || !isFinite(Number(value))) return "—"
+    return Number(value).toFixed(decimals) + suffix
+  }
+
+  function metricSeconds(value) {
+    if (value === null || value === undefined || !isFinite(Number(value))) return "—"
+    return Number(value) < 1 ? Math.round(Number(value) * 1000) + " ms" : Number(value).toFixed(2) + " s"
+  }
+
+  function performanceRows() {
+    var p = root.performance
+    if (!p) return []
+    var hasGeneration = p.tokensPerSecond !== null && p.tokensPerSecond !== undefined
+    return [
+      { label: "平均首字延迟" + (p.ttftApproximateSamples > 0 ? "（近似）" : ""),
+        value: metricSeconds(p.averageTtftSeconds),
+        detail: "从请求记录到首个生成内容，包含思考与工具调用。有效样本 " + p.ttftSamples
+          + "；中位数 " + metricSeconds(p.medianTtftSeconds)
+          + (p.ttftSamples === 0 ? "。日志未记录首字时间。" : "") },
+      { label: hasGeneration ? "平均输出速度" : "输出速度（含等待）",
+        value: metricNumber(hasGeneration ? p.tokensPerSecond : p.endToEndTokensPerSecond, " Token/s", 1),
+        detail: hasGeneration
+          ? "输出 Token 总数 ÷ 有效生成总秒数；思考计入输出，不含输入与缓存。有效样本 " + p.generationSamples
+          : "输出 Token 总数 ÷ 请求总秒数，含首字等待。有效样本 " + p.endToEndSamples },
+      { label: "平均响应耗时", value: metricSeconds(p.averageLatencySeconds),
+        detail: "从请求记录到输出结束的耗时。有效样本 " + p.latencySamples },
+      { label: "输入缓存命中率", value: metricNumber(p.cacheHitRate === null ? null : p.cacheHitRate * 100, "%", 1),
+        detail: "缓存读取 Token ÷ 全部输入 Token（普通输入、缓存读取、缓存写入）。" }
+    ]
   }
 
   function balanceDetailText(b) {
@@ -356,8 +391,12 @@ Panel {
         selected: root.provider ? root.provider.providerId : "",
         providers: root.providers.map(function(p) {
           return { id: p.providerId, todayTokens: p.todayTotalTokens, sessions: p.totalSessions,
-                   localCost: p.recordedCost, accountingScope: p.accountingScope }
-        })
+                   localCost: p.recordedCost, accountingScope: p.accountingScope, performance: p.performance }
+        }),
+        layout: { columns: providerSwitch.columns, tabs: root.providers.map(function(p, i) {
+          var tab = providerButtons.itemAt(i)
+          return tab ? { id: p.providerId, width: tab.width, labelTruncated: tab.truncated } : null
+        }) }
       })
     }
   }
@@ -486,25 +525,25 @@ Panel {
           }
 
           // ---------- Provider switch ----------
-          Row {
+          Grid {
             id: providerSwitch
             visible: root.providers.length > 1
             width: parent.width
             spacing: Style.spacing.md
+            columns: Math.max(1, Math.min(2, root.providers.length))
 
-            readonly property real cellWidth: root.providers.length > 0
-              ? (width - spacing * (root.providers.length - 1)) / root.providers.length
-              : 0
+            readonly property real cellWidth: Math.max(0, (width - spacing * (columns - 1)) / columns)
 
             Repeater {
+              id: providerButtons
               model: root.providers
 
-              Button {
+              ProviderTab {
                 required property var modelData
                 required property int index
 
                 width: providerSwitch.cellWidth
-                text: modelData.providerName
+                label: modelData.providerName
                 selected: index === root.providerIndex
                 hasCursor: root.cursorActive && index === root.providerIndex
                 bordered: true
@@ -678,6 +717,36 @@ Panel {
             }
           }
 
+          PanelSeparator {
+            visible: !!root.performance && root.performance.calls > 0
+            foreground: root.foreground
+          }
+
+          Column {
+            id: performanceSection
+            visible: !!root.performance && root.performance.calls > 0
+            width: parent.width
+            spacing: Style.space(10)
+
+            PanelSectionHeader {
+              width: parent.width
+              text: (root.performanceIsToday ? "今日性能" : "累计性能") + " · 本机"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: root.performanceRows()
+              PerformanceMetric {
+                required property var modelData
+                width: performanceSection.width
+                label: modelData.label
+                value: modelData.value
+                detail: modelData.detail
+              }
+            }
+          }
+
           // ---------- Usage ----------
           PanelSeparator {
             visible: usageSection.visible
@@ -765,6 +834,70 @@ Panel {
         }
       }
     }
+  }
+
+  component ProviderTab: Button {
+    id: providerTab
+    property string label: ""
+    readonly property bool truncated: tabText.truncated
+    text: ""
+    tooltipText: label
+    implicitWidth: tabText.implicitWidth + horizontalPadding * 2 + _reservedBorderLeft + _reservedBorderRight
+    implicitHeight: tabText.implicitHeight + verticalPadding * 2 + _reservedBorderTop + _reservedBorderBottom
+    clip: true
+
+    Text {
+      id: tabText
+      anchors.fill: parent
+      anchors.leftMargin: providerTab.horizontalPadding + providerTab._reservedBorderLeft
+      anchors.rightMargin: providerTab.horizontalPadding + providerTab._reservedBorderRight
+      textFormat: Text.PlainText
+      text: providerTab.label
+      color: providerTab.selected ? providerTab._selectedColor : providerTab.foreground
+      font.family: providerTab.fontFamily
+      font.pixelSize: providerTab.fontSize
+      font.bold: providerTab.selected
+      horizontalAlignment: Text.AlignHCenter
+      verticalAlignment: Text.AlignVCenter
+      elide: Text.ElideRight
+    }
+  }
+
+  component PerformanceMetric: Item {
+    id: metric
+    property string label: ""
+    property string value: ""
+    property string detail: ""
+    implicitHeight: Math.max(metricLabel.implicitHeight, metricValue.implicitHeight)
+
+    Text {
+      id: metricLabel
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+      width: Math.max(0, parent.width - metricValue.width - Style.space(12))
+      text: metric.label
+      textFormat: Text.PlainText
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      elide: Text.ElideRight
+    }
+    Text {
+      id: metricValue
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      width: Math.min(implicitWidth, parent.width)
+      text: metric.value
+      textFormat: Text.PlainText
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      elide: Text.ElideRight
+    }
+    HoverHandler { id: metricHover }
+    ToolTip.visible: metricHover.hovered
+    ToolTip.text: detail
+    ToolTip.delay: 400
   }
 
   // A limit window: label and percentage, meter, and reset countdown.
