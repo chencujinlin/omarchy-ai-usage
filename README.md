@@ -1,24 +1,34 @@
 # Omarchy AI Usage
 
-在系统 Agents 面板上增加 Pi、OpenCode 和 DeepSeek Harness。保留原来的 Claude Code、Codex、Fireworks 账号额度页面。
+**English** | [简体中文](README.zh-CN.md)
 
-## 已支持
+Track **Pi / Oh My Pi, OpenCode, and DeepSeek Harness** usage directly in the **Omarchy Agents panel**.
 
-| 工具 | 数据源 | 指标 |
+An Omarchy user plugin that adds local token usage, logged costs, and performance metrics alongside the existing Claude Code, Codex, and Fireworks account views. Built on the Omarchy 4.0.5 Agents panel with a QML / Quickshell interface and Python collectors.
+
+## Features
+
+- **Usage at a glance** — today's tokens, the last seven days, per-model breakdowns, and call and session counts.
+- **Token details** — input, output, and cache usage, plus reasoning details where available.
+- **Logged costs** — recorded USD costs for Pi / Oh My Pi and OpenCode, with a notice when some calls have no recorded price.
+- **Performance metrics** — time to first token, output speed, response time, and input cache hit rate when the source logs provide enough data.
+- **Local collection** — the added collectors read local session files and databases. Their caches store usage metadata, not prompts, responses, or API keys.
+
+Tools without recorded usage are hidden automatically. The tool selector uses two columns and shows full names on hover.
+
+## Supported tools
+
+| Tool | Local data source | Cost reporting |
 | --- | --- | --- |
-| Pi / Oh My Pi | `~/.pi/agent/sessions/**/*.jsonl`、`~/.omp/agent/sessions/**/*.jsonl` | 今日与近 7 天 Token、模型明细、输入/输出/缓存、调用和会话数、日志中的美元记账费用 |
-| OpenCode | `$XDG_DATA_HOME/opencode/opencode.db`，默认 `~/.local/share/opencode/opencode.db`；兼容 V2 `session_message` 和旧版 `storage/message` | 同上，另含推理 Token；读取 SQLite WAL 中已提交的最新记录 |
-| DeepSeek Harness | `~/.dsh/sessions/**/*.jsonl.zstd`，兼容未压缩 JSONL、`.zst` 和 `session.vN` 日志 | Token、模型、输入/输出/缓存/推理、调用和会话数 |
+| Pi / Oh My Pi | `~/.pi/agent/sessions/**/*.jsonl` and `~/.omp/agent/sessions/**/*.jsonl` | USD costs recorded in the logs |
+| OpenCode | `$XDG_DATA_HOME/opencode/opencode.db`, defaulting to `~/.local/share/opencode/opencode.db`; also supports V2 `session_message` and older `storage/message` files | USD costs recorded in messages |
+| DeepSeek Harness | `~/.dsh/sessions/**/*.jsonl.zstd`; also supports uncompressed JSONL, `.zst`, and `session.vN` logs | Not available in the supported logs; not estimated |
 
-面板还提供今日性能（没有今日调用时显示累计性能）：平均首字延迟、平均输出速度、平均响应耗时和输入缓存命中率。工具切换使用两列布局，超长名称省略显示，悬停可查看完整名称。
+The existing Claude Code, Codex, and Fireworks account views remain available through Omarchy's built-in collectors.
 
-新页面按工具统计，原页面按账号统计；同一笔请求可能出现在两种页面中，不能把各页直接相加作为总账。没有使用记录的工具自动隐藏。新工具页面未查询服务商的剩余额度、余额或重置时间。
+## Quick start
 
-Pi/OpenCode 的费用直接采用日志中的记账值；零值不表示已经核对过服务商账单。部分调用未写价格时，面板会提示。DeepSeek Harness 的日志未携带价格，此版本不估算它的费用，也不读取 API Key。模型浮动价格、网关倍率和订阅费用都不从 Token 数猜测。
-
-## 安装和运行
-
-需要 Omarchy 4.0.5 或提供兼容 Agents 面板的版本，以及 Python 3.10+。先克隆本仓库，再在仓库目录运行：
+**Requirements:** Omarchy **4.0.5**, or a version with a compatible Agents panel, and **Python 3.10+**. To read compressed DeepSeek Harness logs on Python earlier than 3.14, install the system `zstd` command. Python 3.14 uses its built-in zstd support; no third-party Python packages are required.
 
 ```bash
 git clone https://github.com/chencujinlin/omarchy-ai-usage.git
@@ -26,72 +36,102 @@ cd omarchy-ai-usage
 python3 install.py
 ```
 
-安装器先备份当前 `shell.json`，通过 `omarchy plugin clone omarchy.agents` 创建用户插件，然后安装完整的扩展版本并重启桌面栏一次，避免 Quickshell 沿用旧组件缓存。插件默认每 5 分钟刷新；打开面板也会刷新。源码修改后的再次安装会保留现有用户插件备份。备份位于此目录下的 `backups/<时间>/`。
+The installer backs up `shell.json`, creates a user clone with `omarchy plugin clone omarchy.agents`, and installs the extension into `~/.config/omarchy/plugins/<username>.agents/`. It restarts the desktop shell once to clear Quickshell's component cache. Reinstalling also backs up any existing user plugin. Backups are saved under `backups/<timestamp>/` in this repository.
 
-运行目录为 `~/.config/omarchy/plugins/<用户名>.agents/`；不修改 `/usr/share/omarchy/`。原有的面板 IPC 名称保持 `omarchy.agents`：
+The installer does not modify `/usr/share/omarchy/`. Usage refreshes every five minutes by default and when you open the panel.
+
+Open the panel or select a tool:
 
 ```bash
 omarchy-shell omarchy.agents open
 omarchy-shell omarchy.agents select pi
 omarchy-shell omarchy.agents select opencode
 omarchy-shell omarchy.agents select deepseek-harness
+```
+
+A tool must have recorded usage before it can be selected. The IPC name stays `omarchy.agents` after installation.
+
+```bash
 omarchy-shell omarchy.agents status
 omarchy-shell omarchy.agents refresh
 ```
 
-没有用量的工具不能选中；状态命令只输出计数和费用，不输出会话正文。原系统账号采集器继续由系统提供；界面来自安装时的 Omarchy 4.0.5，需要时手动合并上游界面更新。
+The status command reports counts and costs, without session text. The panel is based on Omarchy 4.0.5; future upstream interface changes need to be merged manually.
 
-恢复系统插件可运行：
+### Restore the system plugin
 
 ```bash
 omarchy plugin disable "$(id -un).agents"
 omarchy plugin enable omarchy.agents
 ```
 
-## 自定义日志位置
+## What the numbers mean
 
-默认支持 `PI_CODING_AGENT_DIR`、`DSH_HOME`、XDG 数据目录。也可复制本目录的 `config.example.json` 为 `~/.config/omarchy/agents/local-tools.json`，修改其中的绝对路径或 `~` 路径。只保留需要覆盖的字段即可。OpenCode 还支持 `opencodeDb` 指定某个数据库文件。
+- **Tool usage and account usage can overlap.** The added views group requests by tool; the original views group them by account. Do not add all pages together as a billing total.
+- **Logged costs are not verified bills.** A zero value does not confirm a zero provider charge. Missing prices are indicated, and DeepSeek Harness costs are not estimated. Token counts are not converted into guessed model prices, gateway multipliers, or subscription charges.
+- **The added tool views do not query provider balances, remaining quotas, or reset times, and their collectors do not read API keys.** The original account collectors continue to be supplied by Omarchy and may use provider APIs.
+- **History follows the logs on disk.** Deleting session logs changes the totals after recalculation.
+- **Performance is local to this machine.** Cost and performance figures are not mixed with token totals aggregated across devices.
 
-这些设置由 Python 采集器读取，不依赖桌面进程是否继承终端中的环境变量。修改后运行面板刷新命令即可。
+## Custom log locations
 
-## 统计与缓存
+The collectors support `PI_CODING_AGENT_DIR`, `DSH_HOME`, and XDG data directories. For explicit paths, copy [config.example.json](config.example.json) to `~/.config/omarchy/agents/local-tools.json` and keep only the fields you want to override:
 
-- SQLite 以只读模式读取，采用一致性事务快照；缓存签名包含数据库和 WAL。
-- 缓存只保存时间、模型、会话标识和用量字段，不保存提示词、回复或密钥。
-- 只重读内容发生变化的文件。日期聚合每次重算，跨午夜不沿用昨日数字。
-- Pi 根据消息 ID 去重；OpenCode 优先 V2，再用 V1/旧文件补充，按消息 ID 去重。
-- DSH 选择最高日志版本，跳过分叉继承的历史；最终消息覆盖同一步的流式 usage。新版 `assistant/attempt` 中已消耗 Token 的失败尝试独立统计。
-- DSH 的推理是输出 Token 的子集，不能再次加进总量；OpenCode 的独立 reasoning 字段并入输出桶。模型悬停可查看推理明细。
-- 所有统计文件原子替换，权限 `0600`；锁防止并发刷新相互覆盖。不可读的数据源保留上次成功结果并提示。
-- 统计来自目前仍在磁盘上的日志，删除日志后数字会重新计算。
+```json
+{
+  "piSessionDirs": ["~/.pi/agent/sessions", "~/.omp/agent/sessions"],
+  "opencodeDataDir": "~/.local/share/opencode",
+  "deepseekHarnessSessionDirs": ["~/.dsh/sessions"]
+}
+```
+
+Use absolute paths or `~` paths. OpenCode also supports an `opencodeDb` field pointing to a specific database file. The Python collectors read these settings directly, so the desktop process does not need to inherit your terminal's environment. Refresh the panel after changing them.
+
+## Collection and caching
+
+- OpenCode SQLite databases are opened read-only with a consistent transaction snapshot, including committed records in the WAL. Cache signatures include the database and WAL.
+- Only changed files are reread. Daily totals are recalculated on each refresh, including across midnight.
+- Pi messages are deduplicated by message ID. OpenCode prefers V2 data and supplements it with V1 / older files, deduplicating by message ID.
+- DeepSeek Harness uses the highest log version and skips inherited fork history. Final messages replace streaming usage from the same step; consumed tokens from failed attempts in newer `assistant/attempt` logs are counted separately.
+- DeepSeek Harness reasoning tokens are a subset of output tokens and are not added twice. OpenCode's separate reasoning field is included in the output bucket. Hover over a model for reasoning details.
+- Stats files are replaced atomically with `0600` permissions. A lock prevents concurrent refreshes from overwriting one another. Unreadable sources retain the last successful result with a notice.
+
+To refresh only the three local tools without triggering the original account APIs:
 
 ```bash
-# 只刷新三个本地工具，不触发原有账号接口
 python3 "$HOME/.config/omarchy/plugins/$(id -un).agents/collectors/update.py" --local-only --force
+```
 
-# 在隔离临时目录中测试，不改真实会话
+## Performance definitions
+
+The panel shows today's performance, falling back to all recorded performance when there are no calls today. Missing measurements display as `—`.
+
+| Metric | Definition |
+| --- | --- |
+| Time to first token | Time from the client's request record to the first nonempty generated content, including reasoning and tool arguments. Averages use valid samples; hover for the median and sample count. |
+| Output speed | Total output tokens across valid samples divided by their total generation time. Includes reasoning; excludes input and cache tokens. It is not a simple average of per-request speeds. |
+| Speed including waiting | Shown separately when only the total response duration is available; it is not mixed into generation speed. |
+| Average response time | Client-observed time from the request record to the end of the response. |
+| Input cache hit rate | Cache-read tokens divided by the sum of ordinary input, cache-read, and cache-write tokens. |
+
+DeepSeek Harness uses the original streaming timestamps, ignoring empty deltas and block-start metadata; retries and forks are deduplicated. OpenCode only persists the first segment's start time, so its time to first token is marked approximate. Later multi-step requests without a reliable start time are skipped for that metric to avoid including tool execution time.
+
+Standard Pi history usually provides only request start and response persistence times, so it shows speed including waiting. Logs with `duration` / `ttft` values in milliseconds also provide generation speed and time to first token.
+
+## Development
+
+Tests use synthetic sessions and temporary databases without modifying real session data:
+
+```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Python 标准库即可运行。Python 3.14 使用内置 zstd；较旧版本调用系统 `zstd`。
+The repository contains no local usage records, credentials, or desktop configuration. Installer backups and Python caches are excluded through `.gitignore`.
 
-## 性能数据口径
+## Credits and license
 
-- **首字延迟**：客户端请求记录到第一个非空生成内容，包含思考与工具参数。平均值按有效样本计算，悬停还可查看中位数和样本数。
-- **输出速度**：有效样本的输出 Token 总数 ÷ 生成总秒数，包含思考，不包含输入或缓存。不对每次请求的速度取简单平均。
-- **含等待速度**：只有请求总耗时、没有首字时间时单独展示；不会混入生成速度。
-- **平均响应耗时**：从请求记录到输出结束的客户端观测耗时。
-- **输入缓存命中率**：缓存读取 Token ÷ 普通输入、缓存读取和缓存写入的总 Token。
-- Harness 解码流式记录的原始时间戳，忽略空 delta 和 block-start 元数据；重试和分叉不会重复计数。
-- OpenCode 只持久化首段的开始时间，首字延迟会标注“近似”。无法确定后续多步请求开始时刻时，跳过其首字样本，避免把工具执行时间混入。
-- 标准 Pi 历史日志通常只提供请求开始和回复落盘时间，因此只显示含等待速度；如果消息记录 `duration`/`ttft`（毫秒），则显示生成速度和首字延迟。缺失数据显示 `—`。
-- 性能和费用均只采用本机日志，不与跨设备 Token 汇总混算。缓存只保留数值，不保存流式文字。
+An independent extension based on [Omarchy Agents](https://github.com/omacom/omarchy/tree/master/shell/plugins/agents), licensed under MIT. The original license is preserved in [plugin/LICENSE](plugin/LICENSE); see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-源码中的测试使用人工构造的会话和临时数据库。仓库不包含本机用量、登录凭据或桌面配置；安装产生的 `backups/` 和 Python 缓存已加入 `.gitignore`。
-
-## 参考与许可
-
-- 基础界面：[Omarchy Agents](https://github.com/omacom/omarchy/tree/master/shell/plugins/agents)，MIT，许可原文随插件保留于 `plugin/LICENSE`。
-- 格式参考：[Tokei 知度](https://github.com/cclank/tokei)，参考版本 `6116c6bdd747293cc856b665160a2d507ef9fdb3`，主要核对 Pi/OpenCode 字段以及 DSH 最终回复去重规则。采集器独立实现，未直接移植其完整采集程序。
-- 同时核对 [DeepSeek Harness Session 类型](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/session/src/types.ts)、[TokenUsage](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/llm/llm/src/types.ts) 和 [JSONL 持久化格式](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/session/session-persistence-jsonl)，兼容新的嵌入流式记录和分叉边界。
-- DeepSeek Harness 图标直接采用其官方 Web UI 的 `apps/web/public/favicon.svg` 和 `favicon-dark.svg`；许可保留于 `plugin/assets/DEEPSEEK-LICENSE`。图标仅用于标识对应工具。
+- [Tokei](https://github.com/cclank/tokei), reference commit `6116c6bdd747293cc856b665160a2d507ef9fdb3`, was used to check Pi / OpenCode fields and DeepSeek Harness final-response deduplication. The collectors are independently implemented.
+- DeepSeek Harness formats were also checked against its [session types](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/session/src/types.ts), [TokenUsage types](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/llm/llm/src/types.ts), and [JSONL persistence](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/session/session-persistence-jsonl).
+- DeepSeek Harness icons are unmodified official Web UI favicons used to identify the tool. Their license is preserved in [plugin/assets/DEEPSEEK-LICENSE](plugin/assets/DEEPSEEK-LICENSE).
